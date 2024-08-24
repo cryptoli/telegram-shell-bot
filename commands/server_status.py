@@ -23,9 +23,9 @@ async def server_status(update: Update, context: CallbackContext) -> None:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        if server[6]:  # 如果提供了密钥字符串
-            key_data = encryption.decrypt(server[6])
-            pkey = paramiko.RSAKey.from_private_key(key_data)
+        if server[7]:  # 如果提供了密钥字符串
+            key_data = encryption.decrypt(server[7])
+            pkey = paramiko.RSAKey.from_private_key_string(key_data)
             ssh.connect(
                 hostname=server[2],
                 username=server[3],
@@ -40,19 +40,30 @@ async def server_status(update: Update, context: CallbackContext) -> None:
                 port=server[5]
             )
 
-        # 获取 CPU、内存、磁盘、负载等信息
-        commands = {
-            "CPU 信息": "lscpu",
-            "内存信息": "free -h",
-            "磁盘信息": "df -h",
-            "负载信息": "uptime"
-        }
+        # 获取 CPU 核数和占用百分比
+        stdin, stdout, stderr = ssh.exec_command("grep -c ^processor /proc/cpuinfo")
+        cpu_cores = stdout.read().decode().strip()
+        stdin, stdout, stderr = ssh.exec_command("mpstat | awk '$3 ~ /all/ {print 100 - $13}'")
+        cpu_usage = stdout.read().decode().strip()
 
-        status_info = ""
-        for name, cmd in commands.items():
-            stdin, stdout, stderr = ssh.exec_command(cmd)
-            output = stdout.read().decode() + stderr.read().decode()
-            status_info += f"--- {name} ---\n{output}\n"
+        # 获取内存已使用量和总量
+        stdin, stdout, stderr = ssh.exec_command("free -m | awk 'NR==2{printf \"%s/%sMB (%.2f%%)\", $3,$2,$3*100/$2 }'")
+        memory_info = stdout.read().decode().strip()
+
+        # 获取磁盘已使用量和总量
+        stdin, stdout, stderr = ssh.exec_command("df -h --total | grep 'total' | awk '{print $3 \"/\" $2 \" (\" $5 \")\"}'")
+        disk_info = stdout.read().decode().strip()
+
+        # 获取系统负载
+        stdin, stdout, stderr = ssh.exec_command("uptime | awk -F'[a-z]:' '{ print $2 }'")
+        load_info = stdout.read().decode().strip()
+
+        status_info = (
+            f"CPU 总核数: {cpu_cores}, 占用率: {cpu_usage}%\n"
+            f"内存: {memory_info}\n"
+            f"磁盘: {disk_info}\n"
+            f"系统负载: {load_info}\n"
+        )
 
         await update.message.reply_text(f"服务器状态:\n{status_info}")
         bot_logger.info(f"用户 {update.effective_user.id} 查看了服务器 {host} 的状态。")

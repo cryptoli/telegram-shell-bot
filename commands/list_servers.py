@@ -14,13 +14,14 @@ async def list_servers(update: Update, context: CallbackContext) -> None:
             return
         
         keyboard = [
-            [InlineKeyboardButton(s[2], callback_data=s[2])]
+            [InlineKeyboardButton(s[2], callback_data=s[2])]  # 使用别名显示
             for s in servers
         ]
         keyboard.append([InlineKeyboardButton("取消选择", callback_data="cancel_selection")])
+        keyboard.append([InlineKeyboardButton("执行命令", callback_data="execute_command")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("请选择一个服务器:", reply_markup=reply_markup)
+        await update.message.reply_text("请选择服务器（可以多选）:", reply_markup=reply_markup)
         bot_logger.info(f"用户 {update.effective_user.id} 列出了服务器。")
     except Exception as e:
         bot_logger.error(f"列出服务器出错: {str(e)}")

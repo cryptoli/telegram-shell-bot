@@ -60,7 +60,7 @@ api_token = YOUR_TELEGRAM_API_TOKEN_HERE
 [encryption]
 key = YOUR_ENCRYPTION_KEY_HERE
 ```
-api_token是从@botfather创建bot获取的api token，key是加密用的密钥请随机生成
+api_token是从@botfather创建bot获取的api token，key会随机生成不用修改
 ## 运行
 ```sh
 python bot.py

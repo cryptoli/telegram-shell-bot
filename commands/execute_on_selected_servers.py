@@ -58,7 +58,7 @@ async def execute_on_selected_servers(update: Update, context: CallbackContext) 
     tasks = [run_command_on_server(alias) for alias in selected_servers]
     results = await asyncio.gather(*tasks)
 
-    # 处理执行结果
+    # 处理执行结果并分块发送消息
     output_text = ""
     for alias, output, error in results:
         if error:
@@ -66,7 +66,12 @@ async def execute_on_selected_servers(update: Update, context: CallbackContext) 
         else:
             output_text += f"服务器 {alias} 执行结果:\n{output}\n"
 
-    # 更新消息内容，显示执行结果
-    await message.edit_text(output_text)
+    # 分块发送消息，避免 Message_too_long 错误
+    chunk_size = 4000  # 保留些许余量，避免刚好超过限制
+    for i in range(0, len(output_text), chunk_size):
+        await message.edit_text(output_text[i:i+chunk_size])
+        if i + chunk_size < len(output_text):
+            # 如果还有剩余内容，发送一条新消息，并更新 message 对象以继续编辑后续内容
+            message = await update.message.reply_text(output_text[i+chunk_size:i+2*chunk_size])
 
     bot_logger.info(f"用户 {update.effective_user.id} 在服务器 {', '.join(selected_servers)} 上执行命令: {context.user_data.get('command')}")

@@ -71,11 +71,11 @@ python bot.py
 ```sh
 addServer
 使用密码
-/addserver <用户名> <主机> <密码> [<端口>] [false]
-/addserver root 192.168.1.10 mypassword 22 false
+/addserver <别名> <用户名> <主机> <密码或密钥> [<端口>] [<是否使用密钥>]
+/addserver server1 root 192.168.1.10 mypassword 22 false
 使用密钥
-/addserver <用户名> <主机> <密钥字符串> [<端口>] [true]
-/addserver root 192.168.1.10 "your-ssh-private-key" 22 true
+/addserver <别名> <用户名> <主机> <密码或密钥> [<端口>] [<是否使用密钥>]
+/addserver server1 root 192.168.1.10 "your-ssh-private-key" 22 true
 列出已添加的服务器
 /listservers
 查看服务器状态

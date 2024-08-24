@@ -1,0 +1,4 @@
+python-telegram-bot==20.1
+paramiko==2.11.0
+cryptography==41.0.0
+sqlite==3.36.0

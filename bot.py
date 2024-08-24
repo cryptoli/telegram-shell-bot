@@ -1,4 +1,22 @@
-from telegram.ext import CallbackContext
+import configparser
+from telegram import Update  # 确保导入了 Update 类
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
+from commands.add_server import add_server
+from commands.remove_server import remove_server
+from commands.list_servers import list_servers
+from commands.exec_command import exec_command
+from commands.server_status import server_status
+from commands.cancel_selection import cancel_selection
+
+async def handle_server_selection(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel_selection":
+        await cancel_selection(update, context)
+    else:
+        context.user_data['selected_server'] = query.data
+        await query.edit_message_text(text=f"服务器 {query.data} 已选择")
 
 def main() -> None:
     config = configparser.ConfigParser()
@@ -23,12 +41,5 @@ def main() -> None:
     # 启动 bot
     application.run_polling()
 
-async def handle_server_selection(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "cancel_selection":
-        await cancel_selection(update, context)
-    else:
-        context.user_data['selected_server'] = query.data
-        await query.edit_message_text(text=f"服务器 {query.data} 已选择")
+if __name__ == '__main__':
+    main()

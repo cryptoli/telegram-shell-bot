@@ -46,24 +46,31 @@ async def server_status(update: Update, context: CallbackContext) -> None:
             # 获取 CPU 核数和占用百分比
             stdin, stdout, stderr = ssh.exec_command("grep -c ^processor /proc/cpuinfo")
             cpu_cores = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} CPU 核数: {cpu_cores}")
+
             stdin, stdout, stderr = ssh.exec_command("mpstat | awk '$3 ~ /all/ {print 100 - $13}'")
             cpu_usage = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} CPU 占用率: {cpu_usage}")
 
             # 获取内存已使用量和总量
             stdin, stdout, stderr = ssh.exec_command("free -m | awk 'NR==2{printf \"%s/%sMB (%.2f%%)\", $3,$2,$3*100/$2 }'")
             memory_info = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} 内存信息: {memory_info}")
 
             # 获取磁盘已使用量和总量
             stdin, stdout, stderr = ssh.exec_command("df -h --total | grep 'total' | awk '{print $3 \"/\" $2 \" (\" $5 \")\"}'")
             disk_info = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} 磁盘信息: {disk_info}")
 
             # 获取系统负载
             stdin, stdout, stderr = ssh.exec_command("uptime | awk -F'[a-z]:' '{ print $2 }'")
             load_info = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} 系统负载: {load_info}")
 
             # 获取网络流量使用情况
             stdin, stdout, stderr = ssh.exec_command("ifstat -i eth0 1 1 | awk 'NR==3 {print $1\"KB/s RX, \"$2\"KB/s TX\"}'")
             network_info = stdout.read().decode().strip()
+            bot_logger.debug(f"服务器 {alias} 网络流量: {network_info}")
 
             status_info = (
                 f"Server:{alias} "
@@ -77,6 +84,7 @@ async def server_status(update: Update, context: CallbackContext) -> None:
             ssh.close()
             return alias, status_info, None
         except Exception as e:
+            bot_logger.error(f"获取服务器 {alias} 状态时出错: {str(e)}")
             return alias, None, str(e)
 
     # 异步获取状态

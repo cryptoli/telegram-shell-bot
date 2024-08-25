@@ -1,3 +1,4 @@
+import asyncio
 import paramiko
 from telegram import Update
 from telegram.ext import CallbackContext
@@ -9,20 +10,19 @@ db = Database()
 encryption = Encryption()
 
 async def server_status(update: Update, context: CallbackContext) -> None:
-    try:
-        selected_servers = context.user_data.get('selected_servers', [])
-        
-        if not selected_servers:
-            await update.message.reply_text("请先选择一个或多个服务器。使用 /listservers 选择服务器。")
-            return
-        
-        # 遍历选择的服务器，并获取每个服务器的状态
-        for alias in selected_servers:
-            server = db.get_server(update.effective_user.id, alias)
-            if not server:
-                await update.message.reply_text(f"所选服务器 '{alias}' 未找到。")
-                continue
+    selected_servers = context.user_data.get('selected_servers', [])
+    if not selected_servers:
+        await update.message.reply_text("请先选择一个或多个服务器。使用 /listservers 选择服务器。")
+        return
 
+    message = await update.message.reply_text("开始获取服务器状态...")
+
+    async def get_status(alias):
+        server = db.get_server(update.effective_user.id, alias)
+        if not server:
+            return alias, None, "服务器未找到"
+
+        try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -35,7 +35,7 @@ async def server_status(update: Update, context: CallbackContext) -> None:
                     port=server[5],
                     pkey=pkey
                 )
-            else:  # 如果没有提供密钥字符串，使用密码连接
+            else:  # 使用密码连接
                 ssh.connect(
                     hostname=server[2],
                     username=server[3],
@@ -61,17 +61,42 @@ async def server_status(update: Update, context: CallbackContext) -> None:
             stdin, stdout, stderr = ssh.exec_command("uptime | awk -F'[a-z]:' '{ print $2 }'")
             load_info = stdout.read().decode().strip()
 
+            # 获取网络流量使用情况
+            stdin, stdout, stderr = ssh.exec_command("ifstat -i eth0 1 1 | awk 'NR==3 {print $1\"KB/s RX, \"$2\"KB/s TX\"}'")
+            network_info = stdout.read().decode().strip()
+
             status_info = (
                 f"Server:{alias} "
                 f"CPU:{cpu_cores} {cpu_usage}% "
                 f"Memory:{memory_info} "
                 f"Disk:{disk_info} "
-                f"LoadInfo:{load_info}\n"
+                f"LoadInfo:{load_info} "
+                f"Network:{network_info}\n"
             )
 
-            await update.message.reply_text(f"Status:\n{status_info}")
-            bot_logger.info(f"用户 {update.effective_user.id} 查看了服务器 {alias} 的状态。")
             ssh.close()
-    except Exception as e:
-        bot_logger.error(f"获取服务器状态出错: {str(e)}")
-        await update.message.reply_text(f"获取服务器状态失败: {str(e)}")
+            return alias, status_info, None
+        except Exception as e:
+            return alias, None, str(e)
+
+    # 异步获取状态
+    tasks = [get_status(alias) for alias in selected_servers]
+    results = await asyncio.gather(*tasks)
+
+    # 处理获取的状态并分块发送消息
+    output_text = ""
+    for alias, status_info, error in results:
+        if error:
+            output_text += f"服务器 {alias} 获取状态失败: {error}\n"
+        else:
+            output_text += f"服务器 {alias} 状态:\n{status_info}\n"
+
+    # 分块发送消息，避免 Message_too_long 错误
+    chunk_size = 4000  # 保留些许余量，避免刚好超过限制
+    for i in range(0, len(output_text), chunk_size):
+        await message.edit_text(output_text[i:i+chunk_size])
+        if i + chunk_size < len(output_text):
+            # 如果还有剩余内容，发送一条新消息，并更新 message 对象以继续编辑后续内容
+            message = await update.message.reply_text(output_text[i+chunk_size:i+2*chunk_size])
+
+    bot_logger.info(f"用户 {update.effective_user.id} 查看了服务器 {', '.join(selected_servers)} 的状态。")

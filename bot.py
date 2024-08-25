@@ -13,13 +13,12 @@ from commands.execute_on_selected_servers import execute_on_selected_servers
 from utils.logging import bot_logger
 
 async def run_bot(application):
-    try:
-        # 启动 bot 的长轮询
-        await application.run_polling()
-    except NetworkError as e:
-        bot_logger.error(f"NetworkError: {str(e)}")
-        await asyncio.sleep(5)  # 等待5秒后重试
-        await run_bot(application)
+    while True:
+        try:
+            await application.run_polling()
+        except NetworkError as e:
+            bot_logger.error(f"NetworkError: {str(e)}")
+            await asyncio.sleep(2)  # 等待2秒后重试
 
 def main() -> None:
     config = configparser.ConfigParser()
@@ -39,11 +38,10 @@ def main() -> None:
     # 注册消息处理器
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, exec_command))
     
-    # 使用 `CallbackQueryHandler` 处理服务器选择和命令执行
     application.add_handler(CallbackQueryHandler(handle_server_selection))
 
-    # 异步运行 bot
-    asyncio.run(run_bot(application))
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run_bot(application))
 
 if __name__ == '__main__':
     main()

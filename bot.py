@@ -23,9 +23,12 @@ async def run_bot(application):
             bot_logger.error(f"NetworkError: {str(e)}")
             await asyncio.sleep(5)  # 等待5秒后重试
         finally:
-            # 只调用关闭操作而不关闭事件循环
+            # 停止 Updater
+            await application.updater.stop()
+            # 停止 Application
             await application.stop()
-            await application.shutdown()  # 在完成后安全地关闭
+            # 安全地关闭 Application
+            await application.shutdown()
 
 def main() -> None:
     config = configparser.ConfigParser()

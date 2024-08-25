@@ -62,14 +62,14 @@ async def server_status(update: Update, context: CallbackContext) -> None:
             load_info = stdout.read().decode().strip()
 
             status_info = (
-                f"服务器: {alias}\n"
-                f"CPU 总核数: {cpu_cores}, 占用率: {cpu_usage}%\n"
-                f"内存: {memory_info}\n"
-                f"磁盘: {disk_info}\n"
-                f"系统负载: {load_info}\n"
+                f"Server:{alias} "
+                f"CPU:{cpu_cores} {cpu_usage}% "
+                f"Memory:{memory_info} "
+                f"Disk:{disk_info} "
+                f"LoadInfo:{load_info}\n"
             )
 
-            await update.message.reply_text(f"服务器状态:\n{status_info}")
+            await update.message.reply_text(f"Status:\n{status_info}")
             bot_logger.info(f"用户 {update.effective_user.id} 查看了服务器 {alias} 的状态。")
             ssh.close()
     except Exception as e:

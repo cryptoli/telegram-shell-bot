@@ -15,11 +15,7 @@ from utils.logging import bot_logger
 async def run_bot(application):
     while True:
         try:
-            await application.initialize()  # 初始化应用
-            await application.start()  # 启动应用
-            await application.updater.start_polling()  # 开始轮询
-            await application.shutdown()  # 在轮询结束后关闭应用
-            break  # 正常退出循环
+            await application.run_polling()  # 启动轮询
         except NetworkError as e:
             bot_logger.error(f"NetworkError: {str(e)}")
             await asyncio.sleep(5)  # 等待5秒后重试
@@ -47,7 +43,7 @@ def main() -> None:
 
     # 获取事件循环并运行 bot
     loop = asyncio.get_event_loop()
-    asyncio.ensure_future(run_bot(application))  # 确保 run_bot 在事件循环中被调度
+    loop.create_task(run_bot(application))  # 将 run_bot 作为任务调度到事件循环中
     loop.run_forever()  # 保持事件循环运行
 
 if __name__ == '__main__':

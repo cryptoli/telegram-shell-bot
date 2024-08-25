@@ -15,10 +15,17 @@ from utils.logging import bot_logger
 async def run_bot(application):
     while True:
         try:
-            await application.run_polling()  # 启动轮询
+            # 初始化并开始轮询
+            await application.initialize()
+            await application.start()
+            await application.updater.start_polling()
         except NetworkError as e:
             bot_logger.error(f"NetworkError: {str(e)}")
             await asyncio.sleep(5)  # 等待5秒后重试
+        finally:
+            # 只调用关闭操作而不关闭事件循环
+            await application.stop()
+            await application.shutdown()  # 在完成后安全地关闭
 
 def main() -> None:
     config = configparser.ConfigParser()

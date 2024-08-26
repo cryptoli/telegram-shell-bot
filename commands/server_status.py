@@ -1,10 +1,15 @@
 import asyncio
 import paramiko
+import traceback
 from telegram import Update
 from telegram.ext import CallbackContext
+from cryptography.fernet import InvalidToken
 from utils.encryption import Encryption
 from utils.db import Database
 from utils.logging import bot_logger
+from datetime import datetime
+from telegram.error import BadRequest
+from .executor_pool import submit_task  # 导入线程池提交函数
 
 db = Database()
 encryption = Encryption()
@@ -16,8 +21,61 @@ async def server_status(update: Update, context: CallbackContext) -> None:
         return
 
     message = await update.message.reply_text("开始获取服务器状态...")
+    last_message_text = message.text  # 记录上一次发送的消息内容
 
-    async def get_status(alias):
+    async def run_command(ssh, command, alias, desc):
+        try:
+            stdin, stdout, stderr = ssh.exec_command(command)
+            output = stdout.read().decode().strip()
+            error_output = stderr.read().decode().strip()
+            if error_output:
+                bot_logger.error(f"服务器 {alias} 执行 {desc} 命令时出错：{error_output}")
+                return None, f"Error - {error_output}"
+            return output, None
+        except Exception as e:
+            bot_logger.error(f"服务器 {alias} 执行 {desc} 命令时异常：{str(e)}")
+            return None, str(e)
+
+    async def get_os_type(ssh, alias):
+        output, _ = await run_command(ssh, "cat /etc/os-release", alias, "获取操作系统类型")
+        if "Ubuntu" in output or "Debian" in output:
+            return "debian"
+        elif "CentOS" in output or "Red Hat" in output:
+            return "rhel"
+        else:
+            return "unknown"
+
+    async def check_and_install(ssh, tool_name, package_name, os_type, alias):
+        check_command = f"command -v {tool_name} >/dev/null 2>&1 && echo 'installed' || echo 'not installed'"
+        output, _ = await run_command(ssh, check_command, alias, f"检查 {tool_name} 是否安装")
+
+        if 'not installed' in output:
+            bot_logger.info(f"服务器 {alias} 未检测到 {tool_name}，正在安装...")
+            
+            if os_type == "debian":
+                update_command = "sudo apt-get update"
+                install_command = f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y {package_name}"
+            elif os_type == "rhel":
+                install_command = f"sudo yum install -y {package_name}"
+            else:
+                return False, f"无法自动安装 {tool_name}：不支持的操作系统类型。"
+
+            await run_command(ssh, update_command, alias, "更新包管理器缓存")
+            _, error_output = await run_command(ssh, install_command, alias, f"安装 {tool_name}")
+
+            if error_output:
+                return False, f"安装 {tool_name} 时出错：{error_output}"
+            else:
+                return True, f"{tool_name} 安装成功。"
+        else:
+            return True, None  # 如果已安装，返回None，不输出信息
+
+    async def get_active_interface(ssh, alias):
+        command = "ip route | grep default | awk '{print $5}'"
+        output, _ = await run_command(ssh, command, alias, "检测最活跃的网络接口")
+        return output if output else "eth0"
+
+    def get_status(alias):
         server = db.get_server(update.effective_user.id, alias)
         if not server:
             return alias, None, "服务器未找到"
@@ -30,81 +88,113 @@ async def server_status(update: Update, context: CallbackContext) -> None:
                 key_data = encryption.decrypt(server[7])
                 pkey = paramiko.RSAKey.from_private_key_string(key_data)
                 ssh.connect(
-                    hostname=server[2],
-                    username=server[3],
-                    port=server[5],
+                    hostname=server[3],
+                    username=server[4],
+                    port=server[6],
                     pkey=pkey
                 )
             else:  # 使用密码连接
+                try:
+                    password = encryption.decrypt(server[5])
+                except InvalidToken:
+                    bot_logger.error(f"解密服务器 {alias} 的密码时发生错误：无效的加密数据。")
+                    return alias, None, "解密密码时出错：无效的加密数据。"
+
                 ssh.connect(
-                    hostname=server[2],
-                    username=server[3],
-                    password=encryption.decrypt(server[4]),
-                    port=server[5]
+                    hostname=server[3],
+                    username=server[4],
+                    password=password,
+                    port=server[6]
                 )
 
-            # 获取 CPU 核数和占用百分比
-            stdin, stdout, stderr = ssh.exec_command("grep -c ^processor /proc/cpuinfo")
-            cpu_cores = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} CPU 核数: {cpu_cores}")
+            os_type = asyncio.run(get_os_type(ssh, alias))
+            
+            tools = {'mpstat': 'sysstat', 'ifstat': 'ifstat'}
+            for tool, package in tools.items():
+                success, install_msg = asyncio.run(check_and_install(ssh, tool, package, os_type, alias))
+                if not success:
+                    ssh.close()
+                    return alias, None, install_msg
 
-            stdin, stdout, stderr = ssh.exec_command("mpstat | awk '$3 ~ /all/ {print 100 - $13}'")
-            cpu_usage = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} CPU 占用率: {cpu_usage}")
+            active_interface = asyncio.run(get_active_interface(ssh, alias))
 
-            # 获取内存已使用量和总量
-            stdin, stdout, stderr = ssh.exec_command("free -m | awk 'NR==2{printf \"%s/%sMB (%.2f%%)\", $3,$2,$3*100/$2 }'")
-            memory_info = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} 内存信息: {memory_info}")
+            commands = {
+                "CPU 核数": "grep -c ^processor /proc/cpuinfo",
+                "CPU 占用率": "mpstat | awk '$3 ~ /all/ {print 100 - $13}'",
+                "内存使用": "free -m | awk 'NR==2{printf \"%sMB/%sMB (%.2f%%)\", $3,$2,$3*100/$2 }'",
+                "磁盘使用": "df -h --total | grep 'total' | awk '{print $3 \"/\" $2 \" (\" $5 \")\"}'",
+                "系统负载": "uptime | awk -F'[a-z]:' '{ print $2 }'",
+                "网络流量": f"ifstat -i {active_interface} 1 1 | awk 'NR==3 {{print $1\"KB/s RX, \"$2\"KB/s TX\"}}'",
+                "流量使用量(G)": f"ifstat -i {active_interface} -b -q 1 1 | awk 'NR==3 {{printf \"%.2f GB RX, %.2f GB TX\", $1/1024/1024, $2/1024/1024}}'"
+            }
 
-            # 获取磁盘已使用量和总量
-            stdin, stdout, stderr = ssh.exec_command("df -h --total | grep 'total' | awk '{print $3 \"/\" $2 \" (\" $5 \")\"}'")
-            disk_info = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} 磁盘信息: {disk_info}")
+            status_info = f"服务器 {alias} 状态:\n"
 
-            # 获取系统负载
-            stdin, stdout, stderr = ssh.exec_command("uptime | awk -F'[a-z]:' '{ print $2 }'")
-            load_info = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} 系统负载: {load_info}")
+            for desc, cmd in commands.items():
+                output, error_output = asyncio.run(run_command(ssh, cmd, alias, desc))
 
-            # 获取网络流量使用情况
-            stdin, stdout, stderr = ssh.exec_command("ifstat -i eth0 1 1 | awk 'NR==3 {print $1\"KB/s RX, \"$2\"KB/s TX\"}'")
-            network_info = stdout.read().decode().strip()
-            bot_logger.debug(f"服务器 {alias} 网络流量: {network_info}")
-
-            status_info = (
-                f"Server:{alias} "
-                f"CPU:{cpu_cores} {cpu_usage}% "
-                f"Memory:{memory_info} "
-                f"Disk:{disk_info} "
-                f"LoadInfo:{load_info} "
-                f"Network:{network_info}\n"
-            )
+                if output:
+                    if desc == "CPU 占用率":
+                        status_info += f"{desc}: {output}%\n"
+                    else:
+                        status_info += f"{desc}: {output}\n"
+                elif error_output:
+                    status_info += f"{desc}: {error_output}\n"
+                else:
+                    status_info += f"{desc}: 无法获取到数据\n"
+                    bot_logger.debug(f"服务器 {alias} 执行 {desc} 命令时未返回任何输出。")
 
             ssh.close()
+
+            status_info = (
+                f"**服务器 {alias} 状态:**\n"
+                f"```\n"
+                f"{status_info}\n"
+                f"```\n"
+                f"*更新于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+            )
+
             return alias, status_info, None
         except Exception as e:
-            bot_logger.error(f"获取服务器 {alias} 状态时出错: {str(e)}")
+            error_message = traceback.format_exc()
+            bot_logger.error(f"获取服务器 {alias} 状态时出错: {error_message}")
             return alias, None, str(e)
 
-    # 异步获取状态
-    tasks = [get_status(alias) for alias in selected_servers]
+    combined_output = "开始获取服务器状态...\n"
+    try:
+        await message.edit_text(combined_output)
+    except BadRequest:
+        pass  # 捕获 BadRequest 错误，如果内容没有变化则跳过
+    last_message_text = combined_output  # 初始化上一次消息内容
+
+    loop = asyncio.get_event_loop()
+
+    # 使用线程池并发执行任务
+    tasks = [loop.run_in_executor(None, submit_task, get_status, alias) for alias in selected_servers]
     results = await asyncio.gather(*tasks)
 
-    # 处理获取的状态并分块发送消息
-    output_text = ""
-    for alias, status_info, error in results:
+    for future in results:
+        alias, status_info, error = future.result()  # 调用 result() 方法获取结果
         if error:
-            output_text += f"服务器 {alias} 获取状态失败: {error}\n"
+            combined_output += f"服务器 {alias} 获取状态失败: {error}\n\n"
         else:
-            output_text += f"服务器 {alias} 状态:\n{status_info}\n"
+            combined_output += f"{status_info}\n"
 
-    # 分块发送消息，避免 Message_too_long 错误
-    chunk_size = 4000  # 保留些许余量，避免刚好超过限制
-    for i in range(0, len(output_text), chunk_size):
-        await message.edit_text(output_text[i:i+chunk_size])
-        if i + chunk_size < len(output_text):
-            # 如果还有剩余内容，发送一条新消息，并更新 message 对象以继续编辑后续内容
-            message = await update.message.reply_text(output_text[i+chunk_size:i+2*chunk_size])
+        new_text = f"{combined_output}\n更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        if new_text != last_message_text:
+            try:
+                await message.edit_text(new_text, parse_mode='Markdown')
+                last_message_text = new_text  # 更新上一次消息内容
+            except BadRequest:
+                pass  # 捕获 BadRequest 错误，如果内容没有变化则跳过
+
+    combined_output += "所有服务器状态获取完毕。\n"
+    final_text = f"{combined_output}\n更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    if final_text != last_message_text:
+        try:
+            await message.edit_text(final_text, parse_mode='Markdown')
+        except BadRequest:
+            pass  # 捕获 BadRequest 错误，如果内容没有变化则跳过
 
     bot_logger.info(f"用户 {update.effective_user.id} 查看了服务器 {', '.join(selected_servers)} 的状态。")
+

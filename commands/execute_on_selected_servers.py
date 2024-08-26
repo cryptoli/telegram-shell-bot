@@ -5,6 +5,7 @@ from telegram.ext import CallbackContext
 from utils.db import Database
 from utils.encryption import Encryption
 from utils.logging import bot_logger
+from .executor_pool import submit_task  # 导入线程池提交函数
 
 db = Database()
 encryption = Encryption()
@@ -15,13 +16,10 @@ async def execute_on_selected_servers(update: Update, context: CallbackContext) 
         await update.message.reply_text("未选择任何服务器。")
         return
 
-    # 检查 update 是否来自 callback_query 或 message
-    if update.callback_query:
-        message = await update.callback_query.message.reply_text("开始执行命令...")
-    else:
-        message = await update.message.reply_text("开始执行命令...")
+    # 初始化一个初始消息
+    message = await update.message.reply_text("开始执行命令...\n")
 
-    async def run_command_on_server(alias):
+    def run_command_on_server(alias):
         server = db.get_server(update.effective_user.id, alias)
         if not server:
             return alias, None, "服务器未找到"
@@ -50,28 +48,35 @@ async def execute_on_selected_servers(update: Update, context: CallbackContext) 
             stdin, stdout, stderr = ssh.exec_command(context.user_data.get('command'))
             output = stdout.read().decode() + stderr.read().decode()
             ssh.close()
+
             return alias, output, None
         except Exception as e:
             return alias, None, str(e)
 
-    # 异步执行命令
-    tasks = [run_command_on_server(alias) for alias in selected_servers]
+    # 使用线程池并发执行命令
+    loop = asyncio.get_event_loop()
+    tasks = [loop.run_in_executor(None, submit_task, run_command_on_server, alias) for alias in selected_servers]
     results = await asyncio.gather(*tasks)
 
-    # 处理执行结果并分块发送消息
-    output_text = ""
-    for alias, output, error in results:
+    # 实时更新消息内容
+    combined_output = "开始执行命令...\n"
+    for future in results:
+        alias, output, error = future.result()  # 调用 result() 方法获取结果
         if error:
-            output_text += f"服务器 {alias} 执行失败: {error}\n"
+            combined_output += f"服务器 {alias} 执行失败: {error}\n\n"
         else:
-            output_text += f"服务器 {alias} 执行结果:\n{output}\n"
+            combined_output += (
+                f"服务器 {alias} 执行结果:\n"
+                f"```\n"
+                f"{output}\n"
+                f"```\n"
+                f"{'-'*40}\n\n"  # 分隔符
+            )
+        # 更新消息内容
+        await message.edit_text(combined_output, parse_mode='Markdown')
+        bot_logger.info(f"用户 {update.effective_user.id} 在服务器 {alias} 上执行命令: {context.user_data.get('command')}")
 
-    # 分块发送消息，避免 Message_too_long 错误
-    chunk_size = 4000  # 保留些许余量，避免刚好超过限制
-    for i in range(0, len(output_text), chunk_size):
-        await message.edit_text(output_text[i:i+chunk_size])
-        if i + chunk_size < len(output_text):
-            # 如果还有剩余内容，发送一条新消息，并更新 message 对象以继续编辑后续内容
-            message = await update.message.reply_text(output_text[i+chunk_size:i+2*chunk_size])
+    # 最终更新消息，标记所有命令执行完毕
+    combined_output += "所有命令执行完毕。\n"
+    await message.edit_text(combined_output, parse_mode='Markdown')
 
-    bot_logger.info(f"用户 {update.effective_user.id} 在服务器 {', '.join(selected_servers)} 上执行命令: {context.user_data.get('command')}")
